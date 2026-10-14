@@ -283,7 +283,7 @@ jobs:
           PF_PID=$!
           sleep 5
           HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
-                   --max-time 10 http://localhost:8080 || echo "000")
+                   --max-time 10 http://localhost:8080/jenkins/ || echo "000")
           kill "${PF_PID}" 2>/dev/null || true
           echo "Jenkins HTTP status: ${HTTP}"
           [[ "${HTTP}" =~ ^(200|401|403)$ ]] \
