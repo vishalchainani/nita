@@ -1,0 +1,9 @@
+jtaf_yang_version: "23.2"
+jtaf_device_type: qfx
+jtaf_vars_root: "{{ playbook_dir }}/.."
+build_dir: /var/tmp/build
+netconf_user: jcluser
+netconf_port: 830
+junos_conf: "{{ build_dir }}/{{ inventory_hostname }}/junos.conf"
+xml_dir: "{{ build_dir }}/{{ inventory_hostname }}/xml"
+log: "{{ build_dir }}/ansible-run.log"

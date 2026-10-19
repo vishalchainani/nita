@@ -1,0 +1,13 @@
+- hosts: all
+  connection: local
+  gather_facts: no
+  vars:
+    jtaf_vars_root: "{{ playbook_dir }}/.."
+    tmp_dir: configs
+  roles: []
+
+- hosts: all
+  connection: local
+  gather_facts: no
+  roles:
+    - junos_commit_config

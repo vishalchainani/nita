@@ -6,9 +6,9 @@
 
 ## 2. Profile and project skeleton
 
-- [ ] 2.1 Add `profiles/jtaf-ansible/` with `project.yaml`, `ansible.cfg`, `hosts`, and `manifest`.
-- [ ] 2.2 Include a base `build/sites.yaml` skeleton and `group_vars` placeholders for the generated role.
-- [ ] 2.3 Ensure the generated project includes `filter_plugins` and `configs` directories.
+- [x] 2.1 Add `profiles/jtaf-ansible/` with `project.yaml`, `ansible.cfg`, `hosts`, and `manifest`.
+- [x] 2.2 Include a base `build/sites.yaml` skeleton and `group_vars` placeholders for the generated role.
+- [x] 2.3 Ensure the generated project includes `filter_plugins` and `configs` directories.
 
 ## 3. Project lifecycle integration
 
@@ -19,6 +19,6 @@
 
 ## 4. Verification
 
-- [ ] 4.1 Validate `nitaprj.sh create ... jtaf-ansible` creates a project skeleton correctly.
+- [x] 4.1 Validate `nitaprj.sh create ... jtaf-ansible` creates a project skeleton correctly.
 - [ ] 4.2 Run `nitaprj.sh generate-role <project>` against a sample YANG/XML input and confirm files are generated.
 - [ ] 4.3 Verify the generated project builds and packages without breaking the existing generic flow.
