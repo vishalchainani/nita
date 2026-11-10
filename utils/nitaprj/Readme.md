@@ -83,6 +83,26 @@ Optional
 `group_vars/env.yaml` supplies the job's environment; do not package credentials
 in the project archive.
 
+For Secret-based authentication, provision a Kubernetes Secret containing keys
+`ANSIBLE_NET_USERNAME` and `ANSIBLE_NET_PASSWORD` in the job's namespace. Then
+configure the Jenkins shell environment (or your interactive shell):
+
+```sh
+export NITA_NETCONF_SECRET=my-fabric-netconf-credentials
+export NITA_NAMESPACE=nita
+bash ./run_build.sh
+```
+
+`NITA_NAMESPACE` defaults to `nita` and is used by both the generated Job and
+every launcher Kubernetes operation. `NITA_NETCONF_SECRET` is optional: when set,
+both credential variables use required `secretKeyRef` entries, replacing any
+same-named plaintext entries from `group_vars/env.yaml`. Unrelated environment
+variables remain unchanged. A missing Secret or key prevents the pod from
+starting; there is no plaintext fallback. When unset, existing environment-file
+and SSH-key workflows remain supported. Jenkins environment credentials are
+not automatically forwarded to the job. Provision Secret values outside the
+repository; never commit them.
+
 Jenkins runs `bash ./run_build.sh`, which checks Kubernetes Job completion after
 streaming logs. Rendering or deployment failures now fail the build. A previous
 `build` Job must have been removed (normally by its 120-second TTL) before a new

@@ -197,12 +197,17 @@ class NitaprjProfileTests(unittest.TestCase):
                 result = subprocess.run(
                     ["bash", str(JTAF_PROFILE / "run_build.sh")], cwd=root,
                     env=dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
-                             CALLS=str(calls), PROJECT_DIR=str(JTAF_PROFILE)),
+                             CALLS=str(calls), PROJECT_DIR=str(JTAF_PROFILE),
+                             NITA_NAMESPACE="test-fabric"),
                     text=True, capture_output=True,
                 )
                 self.assertEqual(result.returncode, 1 if failed else 0)
                 self.assertIn("wait --for=condition=complete", calls.read_text())
                 self.assertNotIn(".status.ready", calls.read_text())
+                self.assertTrue(all(
+                    "-n test-fabric" in line
+                    for line in calls.read_text().splitlines()
+                ))
                 if failed:
                     self.assertIn("did not complete successfully", result.stderr)
 
@@ -213,7 +218,8 @@ class NitaprjProfileTests(unittest.TestCase):
             result = subprocess.run(
                 ["python3", str(JTAF_PROFILE / "create_ansible_job_k8s.py"), "build"],
                 cwd=root,
-                env=dict(os.environ, build_dir=output_dir),
+                env=dict(os.environ, build_dir=output_dir,
+                         NITA_NETCONF_SECRET="", NITA_NAMESPACE="nita"),
                 text=True, capture_output=True,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -223,6 +229,45 @@ class NitaprjProfileTests(unittest.TestCase):
             self.assertEqual(container["args"], ["build.sh", output_dir])
             self.assertEqual(container["env"], [])
             self.assertEqual(job["spec"]["backoffLimit"], 0)
+            self.assertEqual(job["metadata"]["namespace"], "nita")
+
+    def test_job_generator_secret_replaces_only_netconf_credentials(self):
+        for secret in ("fabric-credentials", ""):
+            with self.subTest(secret=secret), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                (root / "group_vars").mkdir()
+                variables = {
+                    "ANSIBLE_NET_USERNAME": "test-user",
+                    "ANSIBLE_NET_PASSWORD": "test-placeholder",
+                    "UNRELATED_SETTING": 42,
+                }
+                (root / "group_vars/env.yaml").write_text(
+                    yaml.safe_dump({"env": variables})
+                )
+                result = subprocess.run(
+                    ["python3", str(JTAF_PROFILE / "create_ansible_job_k8s.py"), "build"],
+                    cwd=root,
+                    env=dict(os.environ, NITA_NETCONF_SECRET=secret,
+                             NITA_NAMESPACE="test-fabric"),
+                    text=True, capture_output=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                job = yaml.safe_load((root / "build.yaml").read_text())
+                self.assertEqual(job["metadata"]["namespace"], "test-fabric")
+                entries = job["spec"]["template"]["spec"]["containers"][0]["env"]
+                self.assertEqual(len(entries), 3)
+                environment = {entry["name"]: entry for entry in entries}
+                self.assertEqual(environment["UNRELATED_SETTING"]["value"], "42")
+                for name in ("ANSIBLE_NET_USERNAME", "ANSIBLE_NET_PASSWORD"):
+                    if secret:
+                        self.assertEqual(environment[name], {
+                            "name": name,
+                            "valueFrom": {
+                                "secretKeyRef": {"name": secret, "key": name}
+                            },
+                        })
+                    else:
+                        self.assertEqual(environment[name]["value"], variables[name])
 
 
 if __name__ == "__main__":

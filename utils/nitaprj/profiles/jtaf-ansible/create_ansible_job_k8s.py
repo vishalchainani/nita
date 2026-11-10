@@ -16,6 +16,8 @@ image_name = (
     else os.environ.get("NITA_ANSIBLE_IMAGE", "ghcr.io/juniper/nita-ansible:latest")
 )
 working_dir = os.getcwd()
+namespace = os.environ.get("NITA_NAMESPACE", "nita")
+netconf_secret = os.environ.get("NITA_NETCONF_SECRET")
 
 env_data = {}
 if os.path.exists("group_vars/env.yaml"):
@@ -24,10 +26,27 @@ if os.path.exists("group_vars/env.yaml"):
 else:
     print("No group_vars/env.yaml supplied; using the image's environment.")
 
+netconf_variables = ("ANSIBLE_NET_USERNAME", "ANSIBLE_NET_PASSWORD")
+job_environment = [
+    {"name": name, "value": str(value)}
+    for name, value in (env_data.get("env") or {}).items()
+    if not netconf_secret or name not in netconf_variables
+]
+if netconf_secret:
+    job_environment.extend(
+        {
+            "name": name,
+            "valueFrom": {
+                "secretKeyRef": {"name": netconf_secret, "key": name}
+            },
+        }
+        for name in netconf_variables
+    )
+
 job = {
     "apiVersion": "batch/v1",
     "kind": "Job",
-    "metadata": {"name": job_name},
+    "metadata": {"name": job_name, "namespace": namespace},
     "spec": {
         "backoffLimit": 0,
         "ttlSecondsAfterFinished": 120,
@@ -41,10 +60,7 @@ job = {
                         "workingDir": working_dir,
                         "command": ["/bin/bash"],
                         "args": [f"{job_name}.sh", os.environ.get("build_dir", "None")],
-                        "env": [
-                            {"name": name, "value": str(value)}
-                            for name, value in (env_data.get("env") or {}).items()
-                        ],
+                        "env": job_environment,
                         "volumeMounts": [
                             {"name": "default", "mountPath": "/project/"}
                         ],
