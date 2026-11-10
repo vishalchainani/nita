@@ -17,8 +17,12 @@ image_name = (
 )
 working_dir = os.getcwd()
 
-with open("group_vars/env.yaml", "r", encoding="utf-8") as env_file:
-    env_data = yaml.safe_load(env_file) or {}
+env_data = {}
+if os.path.exists("group_vars/env.yaml"):
+    with open("group_vars/env.yaml", "r", encoding="utf-8") as env_file:
+        env_data = yaml.safe_load(env_file) or {}
+else:
+    print("No group_vars/env.yaml supplied; using the image's environment.")
 
 job = {
     "apiVersion": "batch/v1",
@@ -36,7 +40,7 @@ job = {
                         "image": image_name,
                         "workingDir": working_dir,
                         "command": ["/bin/bash"],
-                        "args": ["-c", f"bash {job_name}.sh", "/tmp"],
+                        "args": [f"{job_name}.sh", os.environ.get("build_dir", "None")],
                         "env": [
                             {"name": name, "value": str(value)}
                             for name, value in (env_data.get("env") or {}).items()

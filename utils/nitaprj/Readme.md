@@ -61,6 +61,55 @@ cd myproject
 
 ## Notes
 
+### JTAF Ansible builds
+
+The `jtaf-ansible` profile renders generated roles before deploying their XML with
+`juniper.device.config` using `load: merge`. It does not use the legacy
+`junos_commit_config` role, which assembles text `.cfg` fragments.
+
+Runtime paths live in `build/runtime.yaml`, outside workbook-managed
+`group_vars` and `host_vars`. Generated roles load this file and write separate
+XML files for each device under `/var/tmp/build/<host>/xml`. Do not put runtime
+defaults only in `group_vars/all.yaml`: workbook generation replaces that file.
+
+The device username (from `ANSIBLE_NET_USERNAME`, falling back to `jcluser`) and
+NETCONF port (`830`) also live in
+`build/runtime.yaml` so workbook updates cannot remove them. Edit that file for
+your environment; these play-level values override inventory values, while
+Ansible extra variables can override them per invocation.
+Supply password authentication through `netconf_passwd` or the Juniper module's
+`ANSIBLE_NET_PASSWORD` environment variable, or configure SSH key authentication.
+Optional
+`group_vars/env.yaml` supplies the job's environment; do not package credentials
+in the project archive.
+
+Jenkins runs `bash ./run_build.sh`, which checks Kubernetes Job completion after
+streaming logs. Rendering or deployment failures now fail the build. A previous
+`build` Job must have been removed (normally by its 120-second TTL) before a new
+build can start; an existing Job causes an explicit error instead of reusing its
+result.
+
+Both shell entry points resolve paths relative to their own project directory.
+Before rendering, `build.sh` syntax-checks the deployment playbook to catch
+missing collections without deploying. Deployment uses `ansible_host`, then
+`management_interface.ip`, then the inventory hostname, stripping any CIDR suffix.
+
+The rendering playbook first imports `make_etc_hosts.yaml` to populate device
+hostname resolution inside the Ansible container. Each device requires
+`ansible_host` or `management_interface.ip`. The task uses Ansible's built-in
+`lineinfile` module rather than the generic profile's shell/sudo helper, serializes
+updates, and permits in-place writes for container-mounted `/etc/hosts`.
+The container user must have write access to that file.
+
+To validate rendering without contacting devices (but updating the container's
+`/etc/hosts`), run inside the Ansible image:
+
+```sh
+ansible-playbook -i hosts build/sites.yaml
+```
+
+`bash build.sh [output-directory]` renders and then deploys configuration.
+
 - The script will prompt to install `yaml2xls.py` if not found, which is required for generating the Excel file.
 - Sensitive environment variables in `group_vars/env.yaml` are scrubbed before packaging.
 - The script expects a `manifest` file in the project directory to determine which files to include in the archive.

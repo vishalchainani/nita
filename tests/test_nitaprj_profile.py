@@ -1,16 +1,56 @@
+import os
 import shutil
 import subprocess
+import tempfile
 import unittest
 import uuid
 from pathlib import Path
+
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
 NITAPRJ_DIR = ROOT / "utils" / "nitaprj"
 NITAPRJ_SCRIPT = NITAPRJ_DIR / "nitaprj.sh"
+JTAF_PROFILE = NITAPRJ_DIR / "profiles" / "jtaf-ansible"
 
 
 class NitaprjProfileTests(unittest.TestCase):
+    def test_hosts_preparation_uses_serialized_container_safe_updates(self):
+        hosts = yaml.safe_load((JTAF_PROFILE / "make_etc_hosts.yaml").read_text())
+        self.assertFalse(hosts[0]["gather_facts"])
+        task = hosts[0]["tasks"][0]
+        self.assertEqual(task["throttle"], 1)
+        settings = task["ansible.builtin.lineinfile"]
+        self.assertEqual(settings["path"], "/etc/hosts")
+        self.assertTrue(settings["unsafe_writes"])
+        self.assertIn("inventory_hostname | regex_escape", settings["regexp"])
+        self.assertIn("management_interface.ip", settings["line"])
+        self.assertIn("split('/') | first", settings["line"])
+
+    def test_deployment_address_supports_management_ip_and_cidr(self):
+        commit = yaml.safe_load((JTAF_PROFILE / "build/commit.yaml").read_text())
+        module = commit[0]["tasks"][0]["juniper.device.config"]
+        self.assertEqual(
+            module["host"],
+            "{{ (ansible_host | default(management_interface.ip | "
+            "default(inventory_hostname))) | split('/') | first }}",
+        )
+        self.assertEqual(module["load"], "merge")
+
+    def test_connection_settings_survive_workbook_variable_replacement(self):
+        runtime = yaml.safe_load((JTAF_PROFILE / "build/runtime.yaml").read_text())
+        commit = yaml.safe_load((JTAF_PROFILE / "build/commit.yaml").read_text())
+        self.assertIn("runtime.yaml", commit[0]["vars_files"])
+        self.assertIn("ANSIBLE_NET_USERNAME", runtime["netconf_user"])
+        self.assertIn("default('jcluser', true)", runtime["netconf_user"])
+        self.assertEqual(runtime["netconf_port"], 830)
+        self.assertNotIn("netconf_passwd", runtime)
+        workbook_variables = {"system": {"host_name": "example"}}
+        effective = {**workbook_variables, **runtime}
+        self.assertEqual(effective["netconf_user"], runtime["netconf_user"])
+        self.assertEqual(effective["netconf_port"], 830)
+
     def test_jtaf_ansible_create_renders_and_packages_project_yaml(self):
         project_name = f"nitaprj-test-{uuid.uuid4().hex}"
         project_dir = NITAPRJ_DIR / project_name
@@ -32,12 +72,157 @@ class NitaprjProfileTests(unittest.TestCase):
             self.assertNotIn("__PROJECT_NAME__", project_yaml)
             self.assertIn("project.yaml", manifest.splitlines())
             self.assertEqual(project_yaml.count("jenkins_url:"), 4)
+            self.assertIn("shell_command: bash ./run_build.sh", project_yaml)
+            self.assertTrue((project_dir / "build/runtime.yaml").is_file())
+            self.assertTrue((project_dir / "build/commit.yaml").is_file())
+            self.assertIn("make_etc_hosts.yaml", manifest.splitlines())
+            sites = yaml.safe_load((project_dir / "build/sites.yaml").read_text())
+            self.assertEqual(sites[0]["import_playbook"], "../make_etc_hosts.yaml")
+            self.assertNotIn(
+                "junos_commit_config",
+                (project_dir / "build/sites.yaml").read_text(),
+            )
             for entry in manifest.splitlines():
                 entry = entry.strip()
                 if entry and not entry.startswith("#"):
                     self.assertTrue((project_dir / entry).exists(), entry)
         finally:
             shutil.rmtree(project_dir, ignore_errors=True)
+
+    def test_generated_roles_load_runtime_paths_outside_workbook(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project = root / "project"
+            shutil.copytree(JTAF_PROFILE, project)
+            tools = root / "bin"
+            tools.mkdir()
+            generator = tools / "jtaf-yang2ansible"
+            generator.write_text(
+                "#!/bin/bash\n"
+                "mkdir -p ansible-provider-junos-qfx/roles/qfx_role/tasks "
+                "ansible-provider-junos-qfx/filter_plugins\n"
+                "echo '[]' > ansible-provider-junos-qfx/roles/qfx_role/tasks/main.yml\n"
+            )
+            converter = tools / "jtaf-xml2yaml"
+            converter.write_text("#!/bin/bash\nexit 0\n")
+            generator.chmod(0o755)
+            converter.chmod(0o755)
+            env = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}")
+            command = [
+                "bash", str(NITAPRJ_SCRIPT), "generate-role", str(project),
+                "-p", "schema.yang", "-x", "config.xml", "-t", "qfx",
+            ]
+            for _ in range(2):
+                result = subprocess.run(
+                    command, cwd=NITAPRJ_DIR, env=env, text=True, capture_output=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            sites = (project / "build/sites.yaml").read_text()
+            self.assertEqual(sites.count("role: qfx_role"), 1)
+            self.assertIn("  vars_files:\n    - runtime.yaml", sites)
+            self.assertNotIn('tmp_dir: "configs"', sites)
+            runtime = (project / "build/runtime.yaml").read_text()
+            self.assertIn("{{ inventory_hostname }}/xml", runtime)
+
+    def test_build_stops_on_render_failure_and_preserves_exit_code(self):
+        self._run_build_with_stub(render_status=2, commit_status=0, expected=2)
+
+    def test_build_propagates_commit_failure(self):
+        self._run_build_with_stub(render_status=0, commit_status=3, expected=3)
+
+    def test_build_renders_before_commit_and_creates_log(self):
+        self._run_build_with_stub(render_status=0, commit_status=0, expected=0)
+
+    def test_build_stops_on_deployment_preflight_failure(self):
+        self._run_build_with_stub(0, 0, 1, preflight_status=4)
+
+    def _run_build_with_stub(self, render_status, commit_status, expected, preflight_status=0):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            tools = root / "bin"
+            tools.mkdir()
+            ansible = tools / "ansible-playbook"
+            calls = root / "calls"
+            ansible.write_text(
+                "#!/bin/bash\n"
+                'echo "$3${4:+ $4}" >> "$CALLS"\n'
+                'test -f build/runtime.yaml || exit 99\n'
+                'echo "Ansible output"\n'
+                f'if [ "$4" = --syntax-check ]; then exit {preflight_status}; fi\n'
+                f'if [ "$3" = build/sites.yaml ]; then exit {render_status}; fi\n'
+                f"exit {commit_status}\n"
+            )
+            ansible.chmod(0o755)
+            env = dict(
+                os.environ, PATH=f"{tools}:{os.environ['PATH']}",
+                HOME=str(root), CALLS=str(calls),
+            )
+            output = root / "output"
+            result = subprocess.run(
+                ["bash", str(JTAF_PROFILE / "build.sh"), str(output)],
+                cwd=root, env=env, text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+            expected_calls = ["build/commit.yaml --syntax-check"]
+            if preflight_status == 0:
+                expected_calls.append("build/sites.yaml --extra-vars")
+            if preflight_status == 0 and render_status == 0:
+                expected_calls.append("build/commit.yaml --extra-vars")
+            self.assertEqual(calls.read_text().splitlines(), expected_calls)
+            self.assertIn("Ansible output", (output / "ansible-run.log").read_text())
+
+    def test_jenkins_runner_checks_job_result_not_log_exit_code(self):
+        for failed in (False, True):
+            with self.subTest(failed=failed), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                for name, body in {
+                    "write_yaml_files.py": "exit 0",
+                    "python3": (
+                        'test -f "$1" || exit 99\n'
+                        'test "$PWD" = "$PROJECT_DIR" || exit 98\n'
+                        "exit 0"
+                    ),
+                    "kubectl": (
+                        'echo "$*" >> "$CALLS"\n'
+                        'if [ "$1" = get ]; then echo pod/build-test; fi\n'
+                        'if [ "$1" = wait ] && [ "$2" = --for=condition=complete ]; then\n'
+                        f"  exit {1 if failed else 0}\n"
+                        "fi\nexit 0"
+                    ),
+                }.items():
+                    tool = root / name
+                    tool.write_text(f"#!/bin/bash\n{body}\n")
+                    tool.chmod(0o755)
+                calls = root / "calls"
+                result = subprocess.run(
+                    ["bash", str(JTAF_PROFILE / "run_build.sh")], cwd=root,
+                    env=dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
+                             CALLS=str(calls), PROJECT_DIR=str(JTAF_PROFILE)),
+                    text=True, capture_output=True,
+                )
+                self.assertEqual(result.returncode, 1 if failed else 0)
+                self.assertIn("wait --for=condition=complete", calls.read_text())
+                self.assertNotIn(".status.ready", calls.read_text())
+                if failed:
+                    self.assertIn("did not complete successfully", result.stderr)
+
+    def test_job_generator_passes_build_directory_without_shell_interpolation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = "/tmp/build directory;not-a-command"
+            result = subprocess.run(
+                ["python3", str(JTAF_PROFILE / "create_ansible_job_k8s.py"), "build"],
+                cwd=root,
+                env=dict(os.environ, build_dir=output_dir),
+                text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            job = yaml.safe_load((root / "build.yaml").read_text())
+            container = job["spec"]["template"]["spec"]["containers"][0]
+            self.assertEqual(container["command"], ["/bin/bash"])
+            self.assertEqual(container["args"], ["build.sh", output_dir])
+            self.assertEqual(container["env"], [])
+            self.assertEqual(job["spec"]["backoffLimit"], 0)
 
 
 if __name__ == "__main__":

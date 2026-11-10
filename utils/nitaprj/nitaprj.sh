@@ -190,6 +190,14 @@ check_jtaf() {
 add_role_to_sites() {
     local sites_file=$1
     local role_name=$2
+    local role_vars='  vars:
+    tmp_dir: "configs"
+    jtaf_vars_root: "{{ playbook_dir }}/.."'
+
+    if [ -f "$(dirname "$sites_file")/runtime.yaml" ]; then
+        role_vars='  vars_files:
+    - runtime.yaml'
+    fi
 
     if grep -q "role: ${role_name}" "$sites_file" ; then
         return
@@ -201,9 +209,7 @@ add_role_to_sites() {
   hosts: all
   connection: local
   gather_facts: no
-  vars:
-    tmp_dir: "configs"
-    jtaf_vars_root: "{{ playbook_dir }}/.."
+${role_vars}
   roles:
     - role: ${role_name}
       delegate_to: localhost
@@ -442,6 +448,5 @@ case $1 in
         usage
         ;;
 esac
-
 
 

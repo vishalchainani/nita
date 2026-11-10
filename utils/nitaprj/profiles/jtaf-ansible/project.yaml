@@ -16,12 +16,7 @@ action:
     jenkins_url: build_jtaf_fabric
     category: BUILD
     configuration:
-      shell_command: >
-        write_yaml_files.py;
-        create_ansible_job_k8s.py build;
-        kubectl apply -f build.yaml;
-        kubectl wait --for=jsonpath="{.status.ready}"=1 job/build --timeout=600s;
-        kubectl logs job/build -f
+      shell_command: bash ./run_build.sh
 
   - name: Dump Configuration
     jenkins_url: dump_jtaf_fabric

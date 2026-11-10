@@ -1,0 +1,21 @@
+- name: Deploy generated JTAF XML
+  hosts: all
+  connection: local
+  gather_facts: no
+  vars_files:
+    - runtime.yaml
+  tasks:
+    - name: Merge generated XML and commit
+      juniper.device.config:
+        host: "{{ (ansible_host | default(management_interface.ip | default(inventory_hostname))) | split('/') | first }}"
+        user: "{{ netconf_user | default(omit) }}"
+        passwd: "{{ netconf_passwd | default(omit) }}"
+        port: "{{ netconf_port | default(830) }}"
+        load: merge
+        format: xml
+        src: "{{ junos_conf }}"
+        commit: true
+        diffs_file: "{{ build_dir }}/log/{{ inventory_hostname }}-diff.log"
+        logfile: "{{ log }}"
+        comment: Committed using NITA
+        timeout: "{{ netconf_timeout | default(300) }}"
